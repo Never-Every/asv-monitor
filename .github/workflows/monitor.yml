@@ -1,1 +1,59 @@
+name: monitor
 
+on:
+  schedule:
+    - cron: '*/5 * * * *'   # проверка каждые 5 минут (GitHub может запускать с задержкой)
+    - cron: '0 2 * * 1'     # отчёт «мониторинг жив» — понедельник 09:00 по Красноярску
+  workflow_dispatch:
+    inputs:
+      report:
+        description: 'Прислать отчёт в Telegram сейчас'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: monitor
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Прошлое состояние
+        uses: actions/cache/restore@v4
+        with:
+          path: state
+          key: state-${{ github.run_id }}
+          restore-keys: state-
+
+      - name: Проверка
+        run: bash check.sh
+        env:
+          TARGETS: ${{ secrets.TARGETS }}
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT: ${{ secrets.TG_CHAT }}
+          HEARTBEAT: ${{ (github.event.schedule == '0 2 * * 1' || inputs.report) && '1' || '0' }}
+
+      - name: Сохранить состояние
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state
+          key: state-${{ github.run_id }}
+
+      # GitHub отключает расписание, если в репозитории 60 дней не было изменений.
+      # Раз в неделю делаем пустую отметку, чтобы мониторинг не остановился сам.
+      - name: Не дать GitHub отключить расписание
+        if: github.event.schedule == '0 2 * * 1'
+        run: |
+          git config user.name "monitor"
+          git config user.email "monitor@users.noreply.github.com"
+          date -u > .keepalive
+          git add .keepalive
+          git commit -m "keepalive" && git push
